@@ -18,6 +18,7 @@ dependencies = {
    "torch >= 7.0",
    "nn",
    "lsqlite3",
+   "penlight",
 }
 
 build = {
@@ -25,5 +26,10 @@ build = {
    modules = {
       ['loadccv.init'] = 'init.lua',
       ['loadccv'] = 'util.c'
+   },
+   install = {
+      bin = {
+         loadccv = 'cli.lua',
+      }
    },
 }
