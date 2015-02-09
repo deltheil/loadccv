@@ -258,7 +258,17 @@ local load = function(filename, options)
 
   db:close()
 
-  return net, input, mean, num_output
+  local meta = {
+    input = {
+      channels = input.channels,
+      width = input.width,
+      height = input.height,
+    },
+    mean = mean,
+    num_output = num_output,
+  }
+
+  return net, meta
 end
 
 return {

@@ -5,16 +5,18 @@ require 'nn'
 require 'image'
 
 local net   = torch.load('net.bin')
-local input = torch.load('input.bin')
-local mean  = torch.load('mean.bin')
+local meta  = torch.load('meta.bin')
 local path  = assert(arg[1])
 local img   = image.load(arg[1], 3, 'byte'):float()
 
-assert(img:size(3) == input.width)
-assert(img:size(2) == input.height)
+assert(img:size(3) == meta.input.width)
+assert(img:size(2) == meta.input.height)
 
-mean = image.scale(mean, input.width, input.height)
-img  = img - mean
+if meta.mean then
+  img = img - image.scale(meta.mean, meta.input.width, meta.input.height)
+else
+  print('[warn] no mean activity')
+end
 
 local out = net:forward(img)
 local _,ind = torch.sort(out, true)

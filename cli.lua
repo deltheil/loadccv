@@ -20,7 +20,7 @@ local opts = {
   verbose = args.verbose,
 }
 
-local net, input, mean, num_output = ccv.load(args.path, opts)
+local net, meta = ccv.load(args.path, opts)
 
 if args.softmax then
   if args.spatial then
@@ -30,11 +30,6 @@ if args.softmax then
 end
 
 torch.save(pathx.join(args.o, 'net.bin'), net)
-torch.save(pathx.join(args.o, 'input.bin'), input)
-if mean then
-  torch.save(pathx.join(args.o, 'mean.bin'), mean)
-else
-  print('[warn] no mean activity')
-end
+torch.save(pathx.join(args.o, 'meta.bin'), meta)
 
 print('Done. See: ' .. strx.join(', ', dirx.getfiles(args.o, '.bin')))
