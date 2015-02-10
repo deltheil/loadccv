@@ -252,7 +252,7 @@ local load = function(filename, options)
     assert(#m/ffi.sizeof('float') == input.channels*convnet_width*convnet_height)
     mean = torch.Tensor(convnet_height, convnet_width, input.channels)
     copy_float_str(m, mean)
-    -- deinterleave (DHW -> HWD)
+    -- deinterleave (HWD -> DHW)
     mean = mean:permute(3, 1, 2):contiguous()
   end
 
