@@ -124,6 +124,19 @@ local fetch_mean_activity = function(db)
   return mean
 end
 
+local load_conv_weights = function(db, layer, ni, no, kw, kh)
+  local weight_str, bias_str = fetch_layer_data(db, layer.id)
+  assert(weight_str)
+  assert(bias_str)
+  local bhwd = torch.Tensor(no, kh, kw, ni)
+  copy_float_str(weight_str, bhwd)
+  -- deinterleave (BHWD -> BDHW)
+  local weight = bhwd:permute(1, 4, 2, 3):contiguous():view(no, ni*kh*kw)
+  local bias = torch.Tensor(no)
+  copy_float_str(bias_str, bias)
+  return weight, bias
+end
+
 local load_conv = function(db, layer, net)
   assert(layer.output_partition == 1)
   assert(layer.output_channels == layer.input_matrix_channels)
@@ -135,14 +148,7 @@ local load_conv = function(db, layer, net)
   local dh = dw
   local zp = layer.output_border
   local sc = nn.SpatialConvolutionMM(ni, no, kw, kh, dw, dh, zp)
-  local weight, bias = fetch_layer_data(db, layer.id)
-  assert(weight)
-  local bhwd = torch.Tensor(no, kh, kw, ni)
-  copy_float_str(weight, bhwd)
-  -- BHWD -> BDHW
-  sc.weight = bhwd:permute(1, 4, 2, 3):contiguous():viewAs(sc.weight)
-  assert(bias)
-  copy_float_str(bias, sc.bias)
+  sc.weight, sc.bias = load_conv_weights(db, layer, ni, no, kw, kh)
   net:add(sc)
   net:add(nn.ReLU())
   return ni, no, kw, kh, dw, dh, zp
@@ -177,14 +183,7 @@ local load_fc = function(db, layer, net, fc_num, spatial)
       ni = ni/(kw*kh)
     end
     local sc = nn.SpatialConvolutionMM(ni, no, kw, kh)
-    local weight, bias = fetch_layer_data(db, layer.id)
-    assert(weight)
-    local bhwd = torch.Tensor(no, kh, kw, ni)
-    copy_float_str(weight, bhwd)
-    -- BHWD -> BDHW
-    sc.weight = bhwd:permute(1, 4, 2, 3):contiguous():viewAs(sc.weight)
-    assert(bias)
-    copy_float_str(bias, sc.bias)
+    sc.weight, sc.bias = load_conv_weights(db, layer, ni, no, kw, kh)
     net:add(sc)
   else
     local li = nn.Linear(ni, no)
@@ -194,7 +193,7 @@ local load_fc = function(db, layer, net, fc_num, spatial)
     assert(bias)
     copy_float_str(bias, li.bias)
     if fc_num == 1 then
-      -- deinterleave (DHW -> HWD)
+      -- re-interleave (DHW -> HWD) to fit with ccv fully-connected data layout
       net:add(nn.Transpose({1, 2}, {2, 3}))
       net:add(nn.Reshape(ni))
     end
