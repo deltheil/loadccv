@@ -33,7 +33,7 @@ local copy_float_str = function(str, tensor) -- src, dst
   ffi.copy(tensor:data(), str, #str)
 end
 
-local convnet_input_size = function(db)
+local fetch_convnet_input_size = function(db)
   local stmt = db:prepare [[
     SELECT
     input_height,
@@ -53,7 +53,7 @@ local convnet_input_size = function(db)
   return width, height
 end
 
-local all_layers = function(db)
+local fetch_all_layers = function(db)
   return db:nrows [[
     SELECT
     layer as id,
@@ -80,7 +80,7 @@ local all_layers = function(db)
 ]]
 end
 
-local layer_data = function(db, id)
+local fetch_layer_data = function(db, id)
   local stmt = db:prepare [[
     SELECT
     weight,
@@ -106,7 +106,7 @@ local layer_data = function(db, id)
   return weight, bias
 end
 
-local mean_activity = function(db)
+local fetch_mean_activity = function(db)
   local stmt = db:prepare [[
     SELECT
     mean_activity
@@ -124,15 +124,116 @@ local mean_activity = function(db)
   return mean
 end
 
+local load_conv = function(db, layer, net)
+  assert(layer.output_partition == 1)
+  assert(layer.output_channels == layer.input_matrix_channels)
+  local ni = layer.input_matrix_channels
+  local no = layer.output_count
+  local kw = layer.output_rows
+  local kh = layer.output_cols
+  local dw = layer.output_strides
+  local dh = dw
+  local zp = layer.output_border
+  local sc = nn.SpatialConvolutionMM(ni, no, kw, kh, dw, dh, zp)
+  local weight, bias = fetch_layer_data(db, layer.id)
+  assert(weight)
+  local bhwd = torch.Tensor(no, kh, kw, ni)
+  copy_float_str(weight, bhwd)
+  -- BHWD -> BDHW
+  sc.weight = bhwd:permute(1, 4, 2, 3):contiguous():viewAs(sc.weight)
+  assert(bias)
+  copy_float_str(bias, sc.bias)
+  net:add(sc)
+  net:add(nn.ReLU())
+  return ni, no, kw, kh, dw, dh, zp
+end
+
+local load_pool = function(db, layer, net)
+  local kw = layer.output_size
+  local kh = kw
+  local dw = layer.output_strides
+  local dh = dw
+  local zp = layer.output_border
+  if zp > 1 then
+    net:add(nn.SpatialZeroPadding(zp))
+  end
+  if CCV_TYPES[layer.type] == 'CCV_CONVNET_MAX_POOL' then
+    net:add(nn.SpatialMaxPooling(kw, kh, dw, dh))
+  else
+    net:add(nn.SpatialAveragePooling(kw, kh, dw, dh))
+  end
+  return kw, dw, zp
+end
+
+local load_fc = function(db, layer, net, fc_num, spatial)
+  local ni = layer.input_node_count
+  local no = layer.output_count
+  if spatial then
+    local kw = 1
+    local kh = 1
+    if fc_num == 1 then
+      kw = layer.input_matrix_cols
+      kh = layer.input_matrix_rows
+      ni = ni/(kw*kh)
+    end
+    local sc = nn.SpatialConvolutionMM(ni, no, kw, kh)
+    local weight, bias = fetch_layer_data(db, layer.id)
+    assert(weight)
+    local bhwd = torch.Tensor(no, kh, kw, ni)
+    copy_float_str(weight, bhwd)
+    -- BHWD -> BDHW
+    sc.weight = bhwd:permute(1, 4, 2, 3):contiguous():viewAs(sc.weight)
+    assert(bias)
+    copy_float_str(bias, sc.bias)
+    net:add(sc)
+  else
+    local li = nn.Linear(ni, no)
+    local weight, bias = fetch_layer_data(db, layer.id)
+    assert(weight)
+    copy_float_str(weight, li.weight)
+    assert(bias)
+    copy_float_str(bias, li.bias)
+    if fc_num == 1 then
+      -- deinterleave (DHW -> HWD)
+      net:add(nn.Transpose({1, 2}, {2, 3}))
+      net:add(nn.Reshape(ni))
+    end
+    net:add(li)
+  end
+  local relu
+  if layer.output_relu > 0 then
+    relu = true
+    net:add(nn.ReLU())
+  else
+    relu = false
+  end
+  return ni, no, relu
+end
+
+local load_mean = function(db, input)
+  local data = fetch_mean_activity(db)
+  local mean, width, height
+  if data then
+    width, height = fetch_convnet_input_size(db)
+    assert((width > 0) and (height > 0))
+    assert(#data/ffi.sizeof('float') == input.channels*width*height)
+    mean = torch.Tensor(height, width, input.channels)
+    copy_float_str(data, mean)
+    -- deinterleave (HWD -> DHW)
+    mean = mean:permute(3, 1, 2):contiguous()
+  end
+  return mean, width, height
+end
+
 local load = function(filename, options)
   local db      = assert(sqlite3.open(filename))
   local options = options or {}
   local net     = nn.Sequential()
-  local fc      = false
+  local fc_num  = 1
   local log     = options.verbose and print or noop
-  local input, mean, num_output
+  local input, num_output
 
-  for layer in all_layers(db) do
+  for layer in fetch_all_layers(db) do
     log("(" .. layer.id .. ") " .. CCV_TYPES[layer.type])
     local ch = layer.input_matrix_channels
     local iw = layer.input_matrix_cols
@@ -148,95 +249,25 @@ local load = function(filename, options)
     log("   input size: " .. iw .. "x" .. ih)
     assert(layer.input_matrix_partition == 1)
     if CCV_TYPES[layer.type] == 'CCV_CONVNET_CONVOLUTIONAL' then
-      assert(layer.output_partition == 1)
-      assert(layer.output_channels == layer.input_matrix_channels)
-      local ni = layer.input_matrix_channels
-      local no = layer.output_count
-      local kw = layer.output_rows
-      local kh = layer.output_cols
-      local dw = layer.output_strides
-      local dh = dw
-      local zp = layer.output_border
+      local ni, no, kw, kh, dw, dh, zp = load_conv(db, layer, net)
       log("   nb. input planes: " .. ni)
       log("   nb. output planes: " .. no)
       log("   kw: " .. kw .. ", kh: " .. kh)
       log("   stride: " .. dw .. ", pad: " .. zp)
-      local sc = nn.SpatialConvolutionMM(ni, no, kw, kh, dw, dh, zp)
-      local weight, bias = layer_data(db, layer.id)
-      assert(weight)
-      local bhwd = torch.Tensor(no, kh, kw, ni)
-      copy_float_str(weight, bhwd)
-      -- BHWD -> BDHW
-      sc.weight = bhwd:permute(1, 4, 2, 3):contiguous():viewAs(sc.weight)
-      assert(bias)
-      copy_float_str(bias, sc.bias)
-      net:add(sc)
-      net:add(nn.ReLU())
     elseif (
       (CCV_TYPES[layer.type] == 'CCV_CONVNET_MAX_POOL') or
       (CCV_TYPES[layer.type] == 'CCV_CONVNET_AVERAGE_POOL')
     ) then
-      local kw = layer.output_size
-      local kh = kw
-      local dw = layer.output_strides
-      local dh = dw
-      local zp = layer.output_border
+      local kw, dw, zp = load_pool(db, layer, net)
       log("   pooling size: " .. kw)
       log("   stride: " .. dw .. ", pad: " .. zp)
-      if zp > 1 then
-        net:add(nn.SpatialZeroPadding(zp))
-      end
-      if CCV_TYPES[layer.type] == 'CCV_CONVNET_MAX_POOL' then
-        net:add(nn.SpatialMaxPooling(kw, kh, dw, dh))
-      else
-        net:add(nn.SpatialAveragePooling(kw, kh, dw, dh))
-      end
     elseif CCV_TYPES[layer.type] == 'CCV_CONVNET_FULL_CONNECT' then
-      local ni = layer.input_node_count
-      local no = layer.output_count
+      local ni, no, relu = load_fc(db, layer, net, fc_num, options.spatial)
+      num_output = no
+      fc_num = fc_num + 1
       log("   nb. input: " .. ni)
       log("   nb. output: " .. no)
-      if options.spatial then
-        local kw = 1
-        local kh = 1
-        if not fc then
-          kw = layer.input_matrix_cols
-          kh = layer.input_matrix_rows
-          ni = ni/(kw*kh)
-          fc = true
-        end
-        local sc = nn.SpatialConvolutionMM(ni, no, kw, kh)
-        local weight, bias = layer_data(db, layer.id)
-        assert(weight)
-        local bhwd = torch.Tensor(no, kh, kw, ni)
-        copy_float_str(weight, bhwd)
-        -- BHWD -> BDHW
-        sc.weight = bhwd:permute(1, 4, 2, 3):contiguous():viewAs(sc.weight)
-        assert(bias)
-        copy_float_str(bias, sc.bias)
-        net:add(sc)
-      else
-        local li = nn.Linear(ni, no)
-        local weight, bias = layer_data(db, layer.id)
-        assert(weight)
-        copy_float_str(weight, li.weight)
-        assert(bias)
-        copy_float_str(bias, li.bias)
-        if not fc then
-          -- deinterleave (DHW -> HWD)
-          net:add(nn.Transpose({1, 2}, {2, 3}))
-          net:add(nn.Reshape(ni))
-          fc = true
-        end
-        net:add(li)
-      end
-      if layer.output_relu > 0 then
-        log("   relu: yes")
-        net:add(nn.ReLU())
-      else
-        log("   relu: no")
-      end
-      num_output = no
+      log("   relu: " .. (relu and 'yes' or 'no'))
     else
       -- TODO(cedric) handle LRN (= CCV_CONVNET_LOCAL_RESPONSE_NORM)
       error('not supported or unknown ccv module (type=' .. layer.type .. ')')
@@ -244,17 +275,7 @@ local load = function(filename, options)
     collectgarbage()
   end
 
-  local m = mean_activity(db)
-
-  if m then
-    local convnet_width, convnet_height = convnet_input_size(db)
-    assert((convnet_width > 0) and (convnet_height > 0))
-    assert(#m/ffi.sizeof('float') == input.channels*convnet_width*convnet_height)
-    mean = torch.Tensor(convnet_height, convnet_width, input.channels)
-    copy_float_str(m, mean)
-    -- deinterleave (HWD -> DHW)
-    mean = mean:permute(3, 1, 2):contiguous()
-  end
+  local mean = load_mean(db, input)
 
   db:close()
 
