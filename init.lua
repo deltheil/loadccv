@@ -137,8 +137,10 @@ local load_conv_weights = function(db, layer, ni, no, kw, kh)
   return weight, bias
 end
 
-local load_conv = function(db, layer, net)
-  assert(layer.output_partition == 1)
+local load_conv = function(db, layer, branches)
+  assert(layer.output_count % layer.output_partition == 0)
+  assert(layer.output_partition % layer.input_matrix_partition == 0)
+  assert(layer.output_partition >= layer.input_matrix_partition)
   assert(layer.output_channels == layer.input_matrix_channels)
   local ni = layer.input_matrix_channels
   local no = layer.output_count
@@ -147,28 +149,47 @@ local load_conv = function(db, layer, net)
   local dw = layer.output_strides
   local dh = dw
   local zp = layer.output_border
-  local sc = nn.SpatialConvolutionMM(ni, no, kw, kh, dw, dh, zp)
-  sc.weight, sc.bias = load_conv_weights(db, layer, ni, no, kw, kh)
-  net:add(sc)
-  net:add(nn.ReLU())
+  local weight, bias = load_conv_weights(db, layer, ni/#branches, no, kw, kh)
+  local offset, length = 1, no/#branches
+  for _,net in ipairs(branches) do
+    local sc = nn.SpatialConvolutionMM(
+      ni/#branches, no/#branches, kw, kh, dw, dh, zp
+    )
+    sc.weight = weight:narrow(1, offset, length)
+    sc.bias = bias:narrow(1, offset, length)
+    net:add(sc)
+    net:add(nn.ReLU())
+    offset = length + 1
+  end
   return ni, no, kw, kh, dw, dh, zp
 end
 
-local load_pool = function(db, layer, net)
+local load_pool = function(db, layer, branches)
   local kw = layer.output_size
   local kh = kw
   local dw = layer.output_strides
   local dh = dw
   local zp = layer.output_border
-  if zp > 1 then
-    net:add(nn.SpatialZeroPadding(zp))
-  end
-  if CCV_TYPES[layer.type] == 'CCV_CONVNET_MAX_POOL' then
-    net:add(nn.SpatialMaxPooling(kw, kh, dw, dh))
-  else
-    net:add(nn.SpatialAveragePooling(kw, kh, dw, dh))
+  for _,net in ipairs(branches) do
+    if zp > 1 then
+      net:add(nn.SpatialZeroPadding(zp))
+    end
+    if CCV_TYPES[layer.type] == 'CCV_CONVNET_MAX_POOL' then
+      net:add(nn.SpatialMaxPooling(kw, kh, dw, dh))
+    else
+      net:add(nn.SpatialAveragePooling(kw, kh, dw, dh))
+    end
   end
   return kw, dw, zp
+end
+
+local load_lrn = function(db, layer, branches)
+  local size  = layer.output_size
+  local kappa = layer.output_kappa
+  local alpha = layer.output_alpha
+  local beta  = layer.output_beta
+  -- TODO(cedric)
+  return size, kappa, alpha, beta
 end
 
 local load_fc = function(db, layer, net, fc_num, spatial)
@@ -224,15 +245,49 @@ local load_mean = function(db, input)
   return mean, width, height
 end
 
+local split = function(layer)
+  assert(layer.input_matrix_channels % layer.input_matrix_partition == 0)
+  local branches = {}
+  local parts = layer.input_matrix_partition
+  local offset, length = 1, layer.input_matrix_channels/parts
+  for i=1,parts do
+    local net = nn.Sequential()
+    net:add(nn.Narrow(1, offset, length))
+    branches[i] = net
+    offset = length + 1
+  end
+  return branches
+end
+
+local concat = function(branches, net)
+  local ctl = nn.ConcatTable()
+  for i=1,#branches do
+    ctl:add(branches[i])
+  end
+  net:add(ctl)
+  net:add(nn.JoinTable(1))
+  return {net}
+end
+
 local load = function(filename, options)
-  local db      = assert(sqlite3.open(filename))
-  local options = options or {}
-  local net     = nn.Sequential()
-  local fc_num  = 1
-  local log     = options.verbose and print or noop
+  local db       = assert(sqlite3.open(filename))
+  local options  = options or {}
+  local net      = nn.Sequential()
+  local branches = {net}
+  local fc_num   = 1
+  local log      = options.verbose and print or noop
   local input, num_output
 
   for layer in fetch_all_layers(db) do
+    if layer.input_matrix_partition ~= #branches then
+      if layer.input_matrix_partition > 1 then
+        assert(#branches == 1)
+        branches = split(layer)
+      else
+        assert(#branches > 1)
+        branches = concat(branches, net)
+      end
+    end
     log("(" .. layer.id .. ") " .. CCV_TYPES[layer.type])
     local ch = layer.input_matrix_channels
     local iw = layer.input_matrix_cols
@@ -246,21 +301,33 @@ local load = function(filename, options)
       log("   input channels: " .. ch)
     end
     log("   input size: " .. iw .. "x" .. ih)
-    assert(layer.input_matrix_partition == 1)
     if CCV_TYPES[layer.type] == 'CCV_CONVNET_CONVOLUTIONAL' then
-      local ni, no, kw, kh, dw, dh, zp = load_conv(db, layer, net)
-      log("   nb. input planes: " .. ni)
-      log("   nb. output planes: " .. no)
+      local ni, no, kw, kh, dw, dh, zp = load_conv(db, layer, branches)
+      if #branches > 1 then
+        log("   nb. input planes: " .. ni/#branches .. " x " .. #branches)
+        log("   nb. output planes: " .. no/#branches .. " x " .. #branches)
+      else
+        log("   nb. input planes: " .. ni)
+        log("   nb. output planes: " .. no)
+      end
       log("   kw: " .. kw .. ", kh: " .. kh)
       log("   stride: " .. dw .. ", pad: " .. zp)
     elseif (
       (CCV_TYPES[layer.type] == 'CCV_CONVNET_MAX_POOL') or
       (CCV_TYPES[layer.type] == 'CCV_CONVNET_AVERAGE_POOL')
     ) then
-      local kw, dw, zp = load_pool(db, layer, net)
+      local kw, dw, zp = load_pool(db, layer, branches)
       log("   pooling size: " .. kw)
       log("   stride: " .. dw .. ", pad: " .. zp)
+    elseif CCV_TYPES[layer.type] == 'CCV_CONVNET_LOCAL_RESPONSE_NORM' then
+      local size, kappa, alpha, beta = load_lrn(db, layer, branches)
+      log("   size: " .. size)
+      log("   kappa: " .. kappa)
+      log("   alpha: " .. alpha)
+      log("   beta: " .. beta)
+      print("   [WARNING] this layer is not supported yet. Skipping...")
     elseif CCV_TYPES[layer.type] == 'CCV_CONVNET_FULL_CONNECT' then
+      assert(#branches == 1)
       local ni, no, relu = load_fc(db, layer, net, fc_num, options.spatial)
       num_output = no
       fc_num = fc_num + 1
@@ -268,7 +335,6 @@ local load = function(filename, options)
       log("   nb. output: " .. no)
       log("   relu: " .. (relu and 'yes' or 'no'))
     else
-      -- TODO(cedric) handle LRN (= CCV_CONVNET_LOCAL_RESPONSE_NORM)
       error('not supported or unknown ccv module (type=' .. layer.type .. ')')
     end
     collectgarbage()
