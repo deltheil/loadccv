@@ -17,6 +17,37 @@ local CCV_TYPES = {
   'CCV_CONVNET_LOCAL_RESPONSE_NORM',
 }
 
+do
+  -- This is a skeleton module: it does NOT implement the normalization.
+  --
+  -- It should only be used as an intermediate to be converted into a module
+  -- with a real implementation like:
+  --   nn.CrossMapNormalization (fbcunn)
+  --   inn.SpatialCrossResponseNormalization (imagine-nn)
+  local LRN, parent = torch.class(
+    'nn.LocalResponseNormalization', 'nn.Identity'
+  )
+
+  function LRN:__init(size, kappa, alpha, beta)
+    parent.__init(self)
+    self.size  = size
+    self.kappa = kappa
+    self.alpha = alpha
+    self.beta  = beta
+  end
+
+  function LRN:updateOutput(input)
+    print("[WARNING] nn.LocalResponseNormalization: void implementation!")
+    return parent.updateOutput(self, input)
+  end
+
+  function LRN:updateGradInput(input, gradOutput)
+    print("[WARNING] nn.LocalResponseNormalization: void implementation!")
+    return parent.updateGradInput(self, input, gradOutput)
+  end
+
+end
+
 local noop = function() end
 
 local half_prec_to_float = function(str)
@@ -188,7 +219,9 @@ local load_lrn = function(db, layer, branches)
   local kappa = layer.output_kappa
   local alpha = layer.output_alpha
   local beta  = layer.output_beta
-  -- TODO(cedric)
+  for _,net in ipairs(branches) do
+    net:add(nn.LocalResponseNormalization(size, kappa, alpha, beta))
+  end
   return size, kappa, alpha, beta
 end
 
@@ -325,7 +358,6 @@ local load = function(filename, options)
       log("   kappa: " .. kappa)
       log("   alpha: " .. alpha)
       log("   beta: " .. beta)
-      print("   [WARNING] this layer is not supported yet. Skipping...")
     elseif CCV_TYPES[layer.type] == 'CCV_CONVNET_FULL_CONNECT' then
       assert(#branches == 1)
       local ni, no, relu = load_fc(db, layer, net, fc_num, options.spatial)

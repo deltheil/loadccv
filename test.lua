@@ -3,6 +3,7 @@ torch.setdefaulttensortype('torch.FloatTensor')
 
 require 'nn'
 require 'image'
+require 'loadccv' -- to load the `nn.LocalResponseNormalization` dummy module
 
 local net   = torch.load('net.bin')
 local meta  = torch.load('meta.bin')
