@@ -186,8 +186,8 @@ local load_conv = function(db, layer, branches)
     local sc = nn.SpatialConvolutionMM(
       ni/#branches, no/#branches, kw, kh, dw, dh, zp
     )
-    sc.weight = weight:narrow(1, offset, length)
-    sc.bias = bias:narrow(1, offset, length)
+    sc.weight:copy(weight:narrow(1, offset, length))
+    sc.bias:copy(bias:narrow(1, offset, length))
     net:add(sc)
     net:add(nn.ReLU())
     offset = length + 1
@@ -225,6 +225,17 @@ local load_lrn = function(db, layer, branches)
   return size, kappa, alpha, beta
 end
 
+local load_fc_weights = function(db, layer, ni, no)
+  local weight_str, bias_str = fetch_layer_data(db, layer.id)
+  assert(weight_str)
+  assert(bias_str)
+  local weight = torch.Tensor(no, ni)
+  copy_float_str(weight_str, weight)
+  local bias = torch.Tensor(no)
+  copy_float_str(bias_str, bias)
+  return weight, bias
+end
+
 local load_fc = function(db, layer, net, fc_num, spatial)
   local ni = layer.input_node_count
   local no = layer.output_count
@@ -236,21 +247,21 @@ local load_fc = function(db, layer, net, fc_num, spatial)
       kh = layer.input_matrix_rows
       ni = ni/(kw*kh)
     end
+    local weight, bias = load_conv_weights(db, layer, ni, no, kw, kh)
     local sc = nn.SpatialConvolutionMM(ni, no, kw, kh)
-    sc.weight, sc.bias = load_conv_weights(db, layer, ni, no, kw, kh)
+    sc.weight:copy(weight)
+    sc.bias:copy(bias)
     net:add(sc)
   else
-    local li = nn.Linear(ni, no)
-    local weight, bias = fetch_layer_data(db, layer.id)
-    assert(weight)
-    copy_float_str(weight, li.weight)
-    assert(bias)
-    copy_float_str(bias, li.bias)
     if fc_num == 1 then
       -- re-interleave (DHW -> HWD) to fit with ccv fully-connected data layout
       net:add(nn.Transpose({1, 2}, {2, 3}))
       net:add(nn.Reshape(ni))
     end
+    local weight, bias = load_fc_weights(db, layer, ni, no)
+    local li = nn.Linear(ni, no)
+    li.weight:copy(weight)
+    li.bias:copy(bias)
     net:add(li)
   end
   local relu
