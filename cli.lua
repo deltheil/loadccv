@@ -24,7 +24,7 @@ local net, meta = ccv.load(args.path, opts)
 
 if args.softmax then
   if args.spatial then
-    net:add(nn.Reshape(num_output))
+    net:add(nn.Reshape(meta.num_output))
   end
   net:add(nn.SoftMax())
 end
