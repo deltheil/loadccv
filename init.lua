@@ -17,36 +17,8 @@ local CCV_TYPES = {
   'CCV_CONVNET_LOCAL_RESPONSE_NORM',
 }
 
-do
-  -- This is a skeleton module: it does NOT implement the normalization.
-  --
-  -- It should only be used as an intermediate to be converted into a module
-  -- with a real implementation like:
-  --   nn.CrossMapNormalization (fbcunn)
-  --   inn.SpatialCrossResponseNormalization (imagine-nn)
-  local LRN, parent = torch.class(
-    'nn.LocalResponseNormalization', 'nn.Identity'
-  )
-
-  function LRN:__init(size, kappa, alpha, beta)
-    parent.__init(self)
-    self.size  = size
-    self.kappa = kappa
-    self.alpha = alpha
-    self.beta  = beta
-  end
-
-  function LRN:updateOutput(input)
-    print("[WARNING] nn.LocalResponseNormalization: void implementation!")
-    return parent.updateOutput(self, input)
-  end
-
-  function LRN:updateGradInput(input, gradOutput)
-    print("[WARNING] nn.LocalResponseNormalization: void implementation!")
-    return parent.updateGradInput(self, input, gradOutput)
-  end
-
-end
+local pkg = require 'loadccv.package.nn'
+local lrn = require('loadccv.lrn.nn')(pkg.cuda())
 
 local noop = function() end
 
@@ -183,13 +155,11 @@ local load_conv = function(db, layer, branches)
   local weight, bias = load_conv_weights(db, layer, ni/#branches, no, kw, kh)
   local offset, length = 1, no/#branches
   for _,net in ipairs(branches) do
-    local sc = nn.SpatialConvolutionMM(
-      ni/#branches, no/#branches, kw, kh, dw, dh, zp
-    )
-    sc.weight:copy(weight:narrow(1, offset, length))
-    sc.bias:copy(bias:narrow(1, offset, length))
-    net:add(sc)
-    net:add(nn.ReLU())
+    net:add(pkg.SpatialConvolution(
+      ni/#branches, no/#branches, kw, kh, dw, dh, zp,
+      weight:narrow(1, offset, length), bias:narrow(1, offset, length)
+    ))
+    net:add(pkg.ReLU())
     offset = length + 1
   end
   return ni, no, kw, kh, dw, dh, zp
@@ -206,9 +176,9 @@ local load_pool = function(db, layer, branches)
       net:add(nn.SpatialZeroPadding(zp))
     end
     if CCV_TYPES[layer.type] == 'CCV_CONVNET_MAX_POOL' then
-      net:add(nn.SpatialMaxPooling(kw, kh, dw, dh))
+      net:add(pkg.SpatialMaxPooling(kw, kh, dw, dh))
     else
-      net:add(nn.SpatialAveragePooling(kw, kh, dw, dh))
+      net:add(pkg.SpatialAveragePooling(kw, kh, dw, dh))
     end
   end
   return kw, dw, zp
@@ -220,7 +190,7 @@ local load_lrn = function(db, layer, branches)
   local alpha = layer.output_alpha
   local beta  = layer.output_beta
   for _,net in ipairs(branches) do
-    net:add(nn.LocalResponseNormalization(size, kappa, alpha, beta))
+    net:add(lrn(size, kappa, alpha, beta))
   end
   return size, kappa, alpha, beta
 end
@@ -242,16 +212,16 @@ local load_fc = function(db, layer, net, fc_num, spatial)
   if spatial then
     local kw = 1
     local kh = 1
+    local dw = 1
+    local dh = 1
+    local zp = 0
     if fc_num == 1 then
       kw = layer.input_matrix_cols
       kh = layer.input_matrix_rows
       ni = ni/(kw*kh)
     end
     local weight, bias = load_conv_weights(db, layer, ni, no, kw, kh)
-    local sc = nn.SpatialConvolutionMM(ni, no, kw, kh)
-    sc.weight:copy(weight)
-    sc.bias:copy(bias)
-    net:add(sc)
+    net:add(pkg.SpatialConvolution(ni, no, kw, kh, dw, dh, zp, weight, bias))
   else
     if fc_num == 1 then
       -- re-interleave (DHW -> HWD) to fit with ccv fully-connected data layout
@@ -259,15 +229,12 @@ local load_fc = function(db, layer, net, fc_num, spatial)
       net:add(nn.Reshape(ni))
     end
     local weight, bias = load_fc_weights(db, layer, ni, no)
-    local li = nn.Linear(ni, no)
-    li.weight:copy(weight)
-    li.bias:copy(bias)
-    net:add(li)
+    net:add(pkg.Linear(ni, no, weight, bias))
   end
   local relu
   if layer.output_relu > 0 then
     relu = true
-    net:add(nn.ReLU())
+    net:add(pkg.ReLU())
   else
     relu = false
   end
