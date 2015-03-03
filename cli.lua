@@ -9,6 +9,8 @@ Load a ccv (libccv.org) network in Torch7.
   -o        (default '.')    output directory
   --softmax                  append a soft-max module to the network
   --spatial                  use spatial convolutions for fully-connected layers
+  --package (default 'nn')   specific package for operations (nn | cunn | cudnn)
+  --lrn     (default 'nn')   package for Local Response Norm. (nn | inn)
   --verbose                  print layers information
   <path>    (string)         path of the ccv network (sqlite3 file)
 ]])
@@ -17,6 +19,8 @@ assert(pathx.isdir(args.o), args.o .. ' is not a directory')
 
 local opts = {
   spatial = args.spatial,
+  package = args.package,
+  lrn     = args.lrn,
   verbose = args.verbose,
 }
 
@@ -27,6 +31,10 @@ if args.softmax then
     net:add(nn.Reshape(meta.num_output))
   end
   net:add(nn.SoftMax())
+end
+
+if meta.cuda then
+  net:cuda()
 end
 
 torch.save(pathx.join(args.o, 'net.bin'), net)

@@ -17,8 +17,52 @@ local CCV_TYPES = {
   'CCV_CONVNET_LOCAL_RESPONSE_NORM',
 }
 
-local pkg = require 'loadccv.package.nn'
-local lrn = require('loadccv.lrn.nn')(pkg.cuda())
+do
+  -- This is a skeleton module: it does NOT implement the normalization.
+  --
+  -- It should only be used as an intermediate to be converted into a module
+  -- with a real implementation like:
+  --   nn.CrossMapNormalization (fbcunn)
+  --   inn.SpatialCrossResponseNormalization (imagine-nn)
+  local LocalRespNorm, parent = torch.class(
+    'nn.LocalResponseNormalization', 'nn.Identity'
+  )
+
+  function LocalRespNorm:__init(size, kappa, alpha, beta)
+    parent.__init(self)
+    self.size  = size
+    self.kappa = kappa
+    self.alpha = alpha
+    self.beta  = beta
+  end
+
+  function LocalRespNorm:updateOutput(input)
+    print("[WARNING] nn.LocalResponseNormalization: void implementation!")
+    return parent.updateOutput(self, input)
+  end
+
+  function LocalRespNorm:updateGradInput(input, gradOutput)
+    print("[WARNING] nn.LocalResponseNormalization: void implementation!")
+    return parent.updateGradInput(self, input, gradOutput)
+  end
+end
+
+-- Packages for main operations (convolution, pooling, etc)
+local PKG
+local LRN
+
+local require_packages = function(pkg, lrn)
+  assert(
+    (pkg == 'nn') or (pkg == 'cunn') or (pkg == 'cudnn'),
+    'unsupported package `' .. pkg .. '`'
+  )
+  assert(
+    (lrn == 'nn') or (lrn == 'inn'),
+    'unsupported LRN package `' .. lrn .. '`'
+  )
+  PKG = require('loadccv.package.' .. pkg)
+  LRN = require('loadccv.lrn.' .. lrn)(PKG.cuda())
+end
 
 local noop = function() end
 
@@ -155,11 +199,11 @@ local load_conv = function(db, layer, branches)
   local weight, bias = load_conv_weights(db, layer, ni/#branches, no, kw, kh)
   local offset, length = 1, no/#branches
   for _,net in ipairs(branches) do
-    net:add(pkg.SpatialConvolution(
+    net:add(PKG.SpatialConvolution(
       ni/#branches, no/#branches, kw, kh, dw, dh, zp,
       weight:narrow(1, offset, length), bias:narrow(1, offset, length)
     ))
-    net:add(pkg.ReLU())
+    net:add(PKG.ReLU())
     offset = length + 1
   end
   return ni, no, kw, kh, dw, dh, zp
@@ -176,9 +220,9 @@ local load_pool = function(db, layer, branches)
       net:add(nn.SpatialZeroPadding(zp))
     end
     if CCV_TYPES[layer.type] == 'CCV_CONVNET_MAX_POOL' then
-      net:add(pkg.SpatialMaxPooling(kw, kh, dw, dh))
+      net:add(PKG.SpatialMaxPooling(kw, kh, dw, dh))
     else
-      net:add(pkg.SpatialAveragePooling(kw, kh, dw, dh))
+      net:add(PKG.SpatialAveragePooling(kw, kh, dw, dh))
     end
   end
   return kw, dw, zp
@@ -190,7 +234,7 @@ local load_lrn = function(db, layer, branches)
   local alpha = layer.output_alpha
   local beta  = layer.output_beta
   for _,net in ipairs(branches) do
-    net:add(lrn(size, kappa, alpha, beta))
+    net:add(LRN(size, kappa, alpha, beta))
   end
   return size, kappa, alpha, beta
 end
@@ -221,20 +265,24 @@ local load_fc = function(db, layer, net, fc_num, spatial)
       ni = ni/(kw*kh)
     end
     local weight, bias = load_conv_weights(db, layer, ni, no, kw, kh)
-    net:add(pkg.SpatialConvolution(ni, no, kw, kh, dw, dh, zp, weight, bias))
+    net:add(PKG.SpatialConvolution(ni, no, kw, kh, dw, dh, zp, weight, bias))
   else
     if fc_num == 1 then
       -- re-interleave (DHW -> HWD) to fit with ccv fully-connected data layout
-      net:add(nn.Transpose({1, 2}, {2, 3}))
+      if PKG.cuda() then
+        net:add(nn.Transpose({2, 3}, {3, 4}))
+      else
+        net:add(nn.Transpose({1, 2}, {2, 3}))
+      end
       net:add(nn.Reshape(ni))
     end
     local weight, bias = load_fc_weights(db, layer, ni, no)
-    net:add(pkg.Linear(ni, no, weight, bias))
+    net:add(PKG.Linear(ni, no, weight, bias))
   end
   local relu
   if layer.output_relu > 0 then
     relu = true
-    net:add(pkg.ReLU())
+    net:add(PKG.ReLU())
   else
     relu = false
   end
@@ -263,7 +311,11 @@ local split = function(layer)
   local offset, length = 1, layer.input_matrix_channels/parts
   for i=1,parts do
     local net = nn.Sequential()
-    net:add(nn.Narrow(1, offset, length))
+    if PKG.cuda() then
+      net:add(nn.Narrow(2, offset, length))
+    else
+      net:add(nn.Narrow(1, offset, length))
+    end
     branches[i] = net
     offset = length + 1
   end
@@ -276,7 +328,8 @@ local concat = function(branches, net)
     ctl:add(branches[i])
   end
   net:add(ctl)
-  net:add(nn.JoinTable(1))
+  -- 2nd arg = expected input dim (for mini-batch and non mini-batch support)
+  net:add(nn.JoinTable(1, 3))
   return {net}
 end
 
@@ -288,6 +341,8 @@ local load = function(filename, options)
   local fc_num   = 1
   local log      = options.verbose and print or noop
   local input, num_output
+
+  require_packages(options.package or 'nn', options.lrn or 'nn')
 
   for layer in fetch_all_layers(db) do
     if layer.input_matrix_partition ~= #branches then
@@ -350,6 +405,10 @@ local load = function(filename, options)
     collectgarbage()
   end
 
+  if PKG.cuda() then
+    net:cuda()
+  end
+
   local mean = load_mean(db, input)
 
   db:close()
@@ -362,6 +421,9 @@ local load = function(filename, options)
     },
     mean = mean,
     num_output = num_output,
+    package = (options.package or 'nn'),
+    lrn = (options.lrn or 'nn'),
+    cuda = PKG:cuda(),
   }
 
   return net, meta

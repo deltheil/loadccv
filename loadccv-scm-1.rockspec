@@ -24,10 +24,13 @@ dependencies = {
 build = {
    type = "builtin",
    modules = {
-      ['loadccv.init']       = 'init.lua',
-      ['loadccv.package.nn'] = 'package/nn.lua',
-      ['loadccv.lrn.nn']     = 'lrn/nn.lua',
-      ['loadccv']            = 'util.c'
+      ['loadccv.init']          = 'init.lua',
+      ['loadccv.package.nn']    = 'package/nn.lua',
+      ['loadccv.package.cunn']  = 'package/cunn.lua',
+      ['loadccv.package.cudnn'] = 'package/cudnn.lua',
+      ['loadccv.lrn.nn']        = 'lrn/nn.lua',
+      ['loadccv.lrn.inn']       = 'lrn/inn.lua',
+      ['loadccv']               = 'util.c'
    },
    install = {
       bin = {
