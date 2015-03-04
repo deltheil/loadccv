@@ -277,7 +277,10 @@ local load_fc = function(db, layer, net, fc_num, spatial)
       net:add(nn.Reshape(ni))
     end
     local weight, bias = load_fc_weights(db, layer, ni, no)
-    net:add(PKG.Linear(ni, no, weight, bias))
+    local fc = nn.Linear(ni, no)
+    fc.weight:copy(weight)
+    fc.bias:copy(bias)
+    net:add(fc)
   end
   local relu
   if layer.output_relu > 0 then

@@ -19,18 +19,10 @@ local create_avg_pool = function(kw, kh, dw, dh)
   return nn.SpatialAveragePooling(kw, kh, dw, dh)
 end
 
-local create_linear = function(ni, no, weight, bias)
-  local linear = nn.Linear(ni, no)
-  linear.weight:copy(weight)
-  linear.bias:copy(bias)
-  return linear
-end
-
 return {
   cuda                       = function() return false end,
   SpatialConvolution         = create_conv,
   ReLU                       = create_relu,
   SpatialMaxPooling          = create_max_pool,
   SpatialAveragePooling      = create_avg_pool,
-  Linear                     = create_linear,
 }
