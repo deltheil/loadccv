@@ -27,3 +27,7 @@ local ccv = require 'loadccv'
 
 local net = ccv.load('/path/to/ccv/samples/image-net-2012-vgg-d.sqlite3')
 ```
+
+## Example
+
+See the [example](example) section.

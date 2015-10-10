@@ -57,7 +57,7 @@ local require_packages = function(pkg, lrn)
     'unsupported package `' .. pkg .. '`'
   )
   assert(
-    (lrn == 'nn') or (lrn == 'inn'),
+    (lrn == 'nn') or (lrn == 'inn') or (lrn == 'cudnn'),
     'unsupported LRN package `' .. lrn .. '`'
   )
   PKG = require('loadccv.package.' .. pkg)

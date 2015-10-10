@@ -30,6 +30,7 @@ build = {
       ['loadccv.package.cudnn'] = 'package/cudnn.lua',
       ['loadccv.lrn.nn']        = 'lrn/nn.lua',
       ['loadccv.lrn.inn']       = 'lrn/inn.lua',
+      ['loadccv.lrn.cudnn']     = 'lrn/cudnn.lua',
       ['loadccv']               = 'util.c'
    },
    install = {
