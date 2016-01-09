@@ -6,8 +6,7 @@ Load a ccv (libccv.org) network in Torch7.
   -o        (default '.')    output directory
   --softmax                  append a soft-max module to the network
   --spatial                  use spatial convolutions for fully-connected layers
-  --package (default 'nn')   specific package for operations (nn | cunn | cudnn)
-  --lrn     (default 'nn')   package for Local Response Norm. (nn | inn | cudnn)
+  --backend (default 'nn')   specific backend for operations (nn | cunn | cudnn)
   --verbose                  print layers information
   <path>    (string)         path of the ccv network (sqlite3 file)
 ]])

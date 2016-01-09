@@ -10,8 +10,8 @@ curl -LO http://static.libccv.org/image-net-2012-vgg-d.sqlite3
 (2) Convert to Torch7 format:
 
 ```bash
-# We use CUDA here. If you do not have a GPU use `--package nn` instead
-loadccv --softmax --package cunn --verbose image-net-2012-vgg-d.sqlite3
+# We use CUDA here. If you do not have a GPU use `--backend nn` instead
+loadccv --softmax --backend cunn --verbose image-net-2012-vgg-d.sqlite3
 ```
 
 (3) Classify a test image[3]:

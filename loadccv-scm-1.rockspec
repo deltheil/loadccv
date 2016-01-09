@@ -25,12 +25,9 @@ build = {
    type = "builtin",
    modules = {
       ['loadccv.init']          = 'init.lua',
-      ['loadccv.package.nn']    = 'package/nn.lua',
-      ['loadccv.package.cunn']  = 'package/cunn.lua',
-      ['loadccv.package.cudnn'] = 'package/cudnn.lua',
-      ['loadccv.lrn.nn']        = 'lrn/nn.lua',
-      ['loadccv.lrn.inn']       = 'lrn/inn.lua',
-      ['loadccv.lrn.cudnn']     = 'lrn/cudnn.lua',
+      ['loadccv.backend.nn']    = 'backend/nn.lua',
+      ['loadccv.backend.cunn']  = 'backend/cunn.lua',
+      ['loadccv.backend.cudnn'] = 'backend/cudnn.lua',
       ['loadccv']               = 'util.c'
    },
    install = {

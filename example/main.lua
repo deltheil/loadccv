@@ -43,18 +43,14 @@ w, h = meta.input.width, meta.input.height
 if meta.cuda then
   require 'cunn'
 end
-require(meta.package) -- e.g 'cudnn'
-require(meta.lrn)     -- e.g 'inn'
+require(meta.backend) -- e.g 'cudnn'
 
 if args.verbose then
   print(
     string.format("%-20s: %s", 'CUDA', meta.cuda and 'enabled' or 'disabled')
   )
   print(
-    string.format("%-20s: %s", 'backend', meta.package)
-  )
-  print(
-    string.format("%-20s: %s", 'local resp. norm.', meta.lrn)
+    string.format("%-20s: %s", 'backend', meta.backend)
   )
   print(
     string.format("%-20s: %dx%d", 'expected image size', w, h)
