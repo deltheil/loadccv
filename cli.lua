@@ -15,8 +15,7 @@ assert(pl.path.isdir(args.o), args.o .. ' is not a directory')
 
 local opts = {
   spatial = args.spatial,
-  package = args.package,
-  lrn     = args.lrn,
+  backend = args.backend,
   verbose = args.verbose,
 }
 

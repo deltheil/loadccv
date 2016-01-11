@@ -22,9 +22,7 @@ end
 
 local create_cross_map_lrn = function(size, kappa, alpha, beta)
   assert(cudnn.version >= 3000, 'cudnn v3 or higher is required')
-  return function(size, kappa, alpha, beta)
-    return cudnn.SpatialCrossMapLRN(size, alpha, beta, kappa)
-  end
+  return cudnn.SpatialCrossMapLRN(size, alpha, beta, kappa)
 end
 
 return {

@@ -389,7 +389,6 @@ local load = function(filename, options)
     mean = mean,
     num_output = num_output,
     backend = (options.backend or 'nn'),
-    lrn = (options.lrn or 'nn'),
     cuda = _NN:cuda(),
   }
 
